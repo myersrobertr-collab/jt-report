@@ -1,0 +1,39 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build exe
+        run: |
+          pyinstaller --noconfirm --onefile --windowed ^
+            --name "JT Pilot Report" ^
+            --add-data "main.py;." ^
+            --collect-all streamlit ^
+            --collect-all pandas ^
+            --collect-all numpy ^
+            --collect-all openpyxl ^
+            --collect-all xlsxwriter ^
+            run_app.py
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: JT-Pilot-Report
+          path: dist/JT Pilot Report.exe
