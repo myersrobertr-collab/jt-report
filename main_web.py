@@ -497,7 +497,7 @@ with col3:
 # =============================
 if build:
     if not (block_file and duty_file and pto_file):
-        st.error("Jeff!  All 3 Reports From .Biz!.")
+        st.error("Jeff! All 3 Reports From .Biz!")
         st.stop()
 
     with st.spinner("Parsing files…"):
