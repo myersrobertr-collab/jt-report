@@ -485,7 +485,7 @@ with col3:
     download_placeholder = st.empty()
     with download_placeholder.container():
         st.download_button(
-            "⬇️ Download Pilot Report (Excel)",
+            "⬇️ Download The Magic (Excel)",
             b"", "Pilot_Report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
@@ -616,6 +616,6 @@ if build:
 
     st.success("✅ Report Is Ready.")
 else:
-    st.info("Upload your three .Biz Reports and click **Build Pilot Report**.")
+    st.info("Upload your three .Biz Reports and click **Create The Magic**.")
 
 
