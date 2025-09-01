@@ -84,10 +84,19 @@ def _norm(s: str) -> str:
     s = re.sub(r"[^0-9a-zA-Z]+","",s)
     return s.lower()
 
+# If we only have a first name (from some exports), map back to full whitelist name.
+_FIRST_TO_FULL = {n.split()[0]: n for n in PILOT_WHITELIST}
+
+def resolve_full_name(name: str) -> str:
+    """Return the whitelist full name when only a first name is present."""
+    name = clean_pilot_name(name).title()
+    if " " in name:
+        return name
+    return _FIRST_TO_FULL.get(name, name)
+
 # =============================
 # Parsers
 # =============================
-
 def parse_block_time(xl) -> pd.DataFrame:
     xls = pd.ExcelFile(xl)
     df = pd.read_excel(xl, sheet_name=xls.sheet_names[0], header=35)
@@ -118,17 +127,17 @@ def parse_block_time(xl) -> pd.DataFrame:
 
     return drop_empty_metric_rows(out, "Pilot", [])
 
-
 def parse_duty_days(xl) -> pd.DataFrame:
-    """Robust parser for the Duty Days export.
+    """
+    Robust parser for the Duty Days export.
     - Finds the period header row (30/90/YTD) even if merged cells are used
     - Forward-fills period labels across columns
-    - Dynamically maps columns for RONs, Weekend Duty, and Duty Days
+    - Dynamically maps columns for RONs (Remain Overnights), Weekend Duty, and Duty Days
     - Returns PilotFirst (first-name only) + the 9 metrics
     """
     raw = pd.read_excel(xl, header=None)
 
-    # 1) Locate the periods row
+    # 1) Locate the periods row (contains 30/90/YTD)
     idx_periods = None
     for i in range(0, min(len(raw), 100)):
         vals = [str(v).lower() for v in raw.iloc[i].tolist()]
@@ -151,6 +160,10 @@ def parse_duty_days(xl) -> pd.DataFrame:
     def _n(s: str) -> str:
         return re.sub(r"[^a-z0-9]+", "", str(s).lower())
 
+    def _is_ron(m_norm: str) -> bool:
+        # Accept "RON", "RONs", and Salesforce's "Remain Overnights" variants
+        return ("ron" in m_norm) or ("overnight" in m_norm) or ("remainovernight" in m_norm)
+
     colmap: dict[str, int] = {}
     name_col = None
 
@@ -164,25 +177,25 @@ def parse_duty_days(xl) -> pd.DataFrame:
         if name_col is None and (("crew" in m_raw and "name" in m_raw) or m in ("crew", "name", "crewnam")):
             name_col = j
 
-        # RONs
-        if "ron" in m:
+        # ---- RONs / Remain Overnights ----
+        if _is_ron(m):
             if "30" in p:   colmap["RONs 30 Day"] = j
             elif "90" in p: colmap["RONs 90 Day"] = j
             elif "ytd" in p: colmap["RONs YTD"] = j
 
-        # Weekend Duty
+        # ---- Weekend Duty ----
         if "weekend" in m:
             if "30" in p:   colmap["Weekend Duty 30 Day"] = j
             elif "90" in p: colmap["Weekend Duty 90 Day"] = j
             elif "ytd" in p: colmap["Weekend Duty YTD"] = j
 
-        # Duty Days (exclude Weekend Duty so we don't double-map)
+        # ---- Duty Days (exclude Weekend so we don't double-map) ----
         if ("duty" in m_raw) and ("weekend" not in m_raw):
             if "30" in p:   colmap["Duty Days 30 Day"] = j
             elif "90" in p: colmap["Duty Days 90 Day"] = j
             elif "ytd" in p: colmap["Duty Days YTD"] = j
 
-    # 3) Fallback name column if not found: pick letter-dominant early column
+    # 3) Fallback name column if not found: pick a letter-dominant early column
     if name_col is None:
         candidates = list(range(min(8, raw.shape[1])))
         def letters_ratio(series: pd.Series) -> float:
@@ -219,9 +232,9 @@ def parse_duty_days(xl) -> pd.DataFrame:
 
     return drop_empty_metric_rows(out, "PilotFirst", [c for c in out.columns if c != "PilotFirst"])
 
-
 def parse_pto_off(xl) -> pd.DataFrame:
-    """Robust parser for PTO & Off export.
+    """
+    Robust parser for PTO & Off export.
     - Finds a metrics header row containing PTO/Day Off
     - Tries to find a nearby periods row (30/90/YTD); if not found, infers from the metric cell itself
     - Dynamically maps PTO/OFF x (30, 90, YTD)
@@ -319,7 +332,6 @@ def parse_pto_off(xl) -> pd.DataFrame:
 # =============================
 # Export helper (headers, logo, widths, freeze panes)
 # =============================
-
 def round_and_export(rep_out: pd.DataFrame) -> tuple[BytesIO, str]:
     # Round values before export
     block_cols = [c for c in rep_out.columns if "Block Hours" in c]
@@ -536,6 +548,9 @@ if build:
             if pd.notna(row.get("PilotFirst")) and str(row["PilotFirst"]).strip(): return str(row["PilotFirst"]).title()
             return str(row.get("PilotKey", "")).title()
         rep["Pilot"] = rep.apply(_pick, axis=1)
+
+        # If a row only has a first name, map it to the full whitelist name
+        rep["Pilot"] = rep["Pilot"].map(resolve_full_name)
 
         # Cleanup
         rep = rep.drop(columns=["Pilot_blk","PilotFirst","PilotFirst_pto","PilotKey"], errors="ignore")
