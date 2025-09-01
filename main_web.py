@@ -18,7 +18,7 @@ st.set_page_config(page_title="Pilot Report Builder — Web", layout="wide")
 APP_NAME = "TFS Pilot Report Builder"
 APP_VERSION = "2025.09.01"
 
-# 🔗 Paste your Salesforce report URLs here:
+# Salesforce report URLs here:
 SALESFORCE_REPORTS = {
     "block": "https://target-flight.lightning.force.com/lightning/r/Report/00Oao000006yZfNEAU/view?queryScope=userFolders",  # Block Time / Instrument Currency
     "duty":  "https://target-flight.lightning.force.com/lightning/r/Report/00Oao000006yZnREAU/view?queryScope=userFolders",   # Duty Days
