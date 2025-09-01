@@ -71,8 +71,6 @@ def inject_css():
         unsafe_allow_html=True,
     )
 
-    )
-
 def pill(ok: bool) -> str:
     return f"<span class='pill {'ok' if ok else 'wait'}'>{'Ready' if ok else 'Waiting'}</span>"
 
