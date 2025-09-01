@@ -3,6 +3,7 @@ import unicodedata
 from io import BytesIO
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -11,8 +12,8 @@ import streamlit as st
 # =============================
 # UI
 # =============================
-st.set_page_config(page_title="Pilot Report Builder — Web", layout="wide")
-st.title("🛫 TFS Pilot Report Builder")
+st.set_page_config(page_title="Pilot Report Builder — Local", layout="wide")
+st.title("🛫 TFS Pilot Report Builder (Local)")
 st.caption(
     "Upload the 3 .Biz Reports (Block Time, Duty Days, PTO & Off). "
     "Filthy Animals.  "
@@ -22,7 +23,7 @@ st.caption(
 # =============================
 # Hard-locked pilot roster & order
 # =============================
-PILOT_WHITELIST: list[str] = [
+PILOT_WHITELIST: List[str] = [
     "Barry Wolfe","Bradley Jordan","Debra Voit","Dustin Anderson","Eric Tange",
     "Grant Fitzer","Ian Hank","James Duffey","Jeffrey Tyson","Joshua Otzen",
     "Nicholas Hoffmann","Randy Ripp","Richard Olson","Robert Myers","Ron Jenson","Sean Sinette",
@@ -57,7 +58,7 @@ def looks_like_noise(s: str) -> bool:
     if not re.search(r"[a-zA-Z]", t): return True
     return False
 
-def drop_empty_metric_rows(df: pd.DataFrame, name_col: str, metric_cols: list[str]) -> pd.DataFrame:
+def drop_empty_metric_rows(df: pd.DataFrame, name_col: str, metric_cols: List[str]) -> pd.DataFrame:
     out = df.copy()
     out[name_col] = out[name_col].map(clean_pilot_name)
     out = out[~out[name_col].map(looks_like_noise)]
@@ -85,278 +86,129 @@ def _norm(s: str) -> str:
     return s.lower()
 
 # =============================
-# Parsers
+# Header helpers pinned to your 2025‑08‑31 export structure
+# =============================
+
+def _find_row(df: pd.DataFrame, tokens: List[str], max_rows: int = 120) -> Optional[int]:
+    toks = [t.lower() for t in tokens]
+    for i in range(min(max_rows, len(df))):
+        row = " | ".join(str(x).lower() for x in df.iloc[i].tolist())
+        if all(t in row for t in toks):
+            return i
+    return None
+
+# =============================
+# Parsers (stable mapping matching your latest exports)
 # =============================
 
 def parse_block_time(xl) -> pd.DataFrame:
-    xls = pd.ExcelFile(xl)
-    df = pd.read_excel(xl, sheet_name=xls.sheet_names[0], header=35)
+    """Maps Block 30/6mo/YTD, Day/Night TO & LDG, Holds 6mo.
+    Uses detected header row; falls back to expected positions if needed.
+    """
+    raw = pd.read_excel(xl, header=None)
+    idx_periods = _find_row(raw, ["block", "30"]) or _find_row(raw, ["30", "ytd"]) or 34
+    idx_metrics = idx_periods + 1
+    header = raw.iloc[idx_metrics].astype(str).tolist()
 
-    drop_mask = (df.columns.astype(str).str.startswith("Unnamed")) & (df.isna().all())
-    df = df.loc[:, ~drop_mask]
-    if df.shape[1] > 0:
-        df = df[df.iloc[:,0].notna()].reset_index(drop=True)
+    def idx_of(pred, default=None):
+        for j, h in enumerate(header):
+            t = str(h).lower()
+            if pred(t):
+                return j
+        return default
 
-    cols = list(df.columns)
-    name_col = next((c for c in cols if "crew" in str(c).lower()), cols[0])
+    name_col = idx_of(lambda t: ("crew" in t and "name" in t), 1)
+    blk_idxs = [j for j, h in enumerate(header) if str(h).lower().startswith("sum of block time")]
+    blk_30   = blk_idxs[0] if len(blk_idxs) >= 1 else 2
+    blk_6mo  = blk_idxs[1] if len(blk_idxs) >= 2 else 3
+    blk_ytd  = blk_idxs[2] if len(blk_idxs) >= 3 else 4
 
-    out = pd.DataFrame()
-    out["Pilot"] = df[name_col].astype(str).map(clean_pilot_name)
+    day_to   = idx_of(lambda t: "sum of day takeoff" in t, 5)
+    night_to = idx_of(lambda t: "sum of night takeoff" in t, 6)
+    day_ldg  = idx_of(lambda t: "sum of day landing" in t, 7)
+    night_ldg= idx_of(lambda t: "sum of night landing" in t, 8)
+    holds    = idx_of(lambda t: ("sum of flight log: holds" in t) or (t.strip()=="holds"), 9)
 
-    blk_cols = [c for c in cols if "Sum of Block Time" in str(c)]
-    if len(blk_cols) > 0: out["Block Hours 30 Day"] = _to_num(df[blk_cols[0]])
-    if len(blk_cols) > 1: out["Block Hours 6 Month"] = _to_num(df[blk_cols[1]])
-    if len(blk_cols) > 2: out["Block Hours YTD"] = _to_num(df[blk_cols[2]])
+    data = raw.iloc[idx_metrics + 1:].reset_index(drop=True)
+    names = data.iloc[:, name_col].astype(str)
 
-    if "Sum of Day Takeoff" in cols:   out["Day Takeoff"] = _to_num(df["Sum of Day Takeoff"]).fillna(0)
-    if "Sum of Night Takeoff" in cols: out["Night Takeoff"] = _to_num(df["Sum of Night Takeoff"]).fillna(0)
-    if "Sum of Day Landing" in cols:   out["Day Landing"] = _to_num(df["Sum of Day Landing"]).fillna(0)
-    if "Sum of Night Landing" in cols: out["Night Landing"] = _to_num(df["Sum of Night Landing"]).fillna(0)
-
-    if "Sum of Flight Log: Holds" in cols:
-        out["Holds 6 Month"] = _to_num(df["Sum of Flight Log: Holds"])
-
-    return drop_empty_metric_rows(out, "Pilot", [])
+    out = pd.DataFrame({
+        "Pilot": names.map(clean_pilot_name),
+        "Block Hours 30 Day": _to_num(data.iloc[:, blk_30]),
+        "Block Hours 6 Month": _to_num(data.iloc[:, blk_6mo]),
+        "Block Hours YTD": _to_num(data.iloc[:, blk_ytd]),
+        "Day Takeoff": _to_num(data.iloc[:, day_to]).fillna(0),
+        "Night Takeoff": _to_num(data.iloc[:, night_to]).fillna(0),
+        "Day Landing": _to_num(data.iloc[:, day_ldg]).fillna(0),
+        "Night Landing": _to_num(data.iloc[:, night_ldg]).fillna(0),
+        "Holds 6 Month": _to_num(data.iloc[:, holds]),
+    })
+    return drop_empty_metric_rows(out, "Pilot", [c for c in out.columns if c != "Pilot"])
 
 
 def parse_duty_days(xl) -> pd.DataFrame:
-    """Robust parser for the Duty Days export.
-    - Finds the period header row (30/90/YTD) even if merged cells are used
-    - Forward-fills period labels across columns
-    - Dynamically maps columns for RONs, Weekend Duty, and Duty Days
-    - Returns PilotFirst (first-name only) + the 9 metrics
+    """Duty Days export pinned to triplets per period.
+    30d: [2] RONs, [3] Weekend, [4] Duty
+    90d: [5] RONs, [6] Weekend, [7] Duty
+    YTD: [8] RONs, [9] Weekend, [10] Duty
+    Names in col 1.
     """
     raw = pd.read_excel(xl, header=None)
-
-    # 1) Locate the periods row
-    idx_periods = None
-    for i in range(0, min(len(raw), 100)):
-        vals = [str(v).lower() for v in raw.iloc[i].tolist()]
-        has_30 = any(("30 day" in v) or ("30 days" in v) for v in vals)
-        has_90 = any(("90 day" in v) or ("90 days" in v) for v in vals)
-        has_ytd = any("ytd" in v for v in vals)
-        if has_30 and has_90 and has_ytd:
-            idx_periods = i
-            break
-    if idx_periods is None:
-        raise ValueError("Duty Days: Couldn't locate the periods row (30/90/YTD).")
-
+    idx_periods = _find_row(raw, ["30", "90", "ytd"]) or 27
     idx_metrics = idx_periods + 1
-    periods = raw.iloc[idx_periods].astype(str)
-    metrics = raw.iloc[idx_metrics].astype(str)
 
-    # Forward-fill merged/blank period cells so each column has a period label
-    periods = periods.replace("nan", "").replace("", np.nan).ffill()
-
-    def _n(s: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", str(s).lower())
-
-    colmap: dict[str, int] = {}
-    name_col = None
-
-    # 2) Build column mapping dynamically
-    for j in range(raw.shape[1]):
-        m_raw = str(metrics.iloc[j]).lower()
-        m = _n(metrics.iloc[j])
-        p = _n(periods.iloc[j])
-
-        # Name column (Crew Name or similar)
-        if name_col is None and (("crew" in m_raw and "name" in m_raw) or m in ("crew", "name", "crewnam")):
-            name_col = j
-
-        # RONs
-        if "ron" in m:
-            if "30" in p:   colmap["RONs 30 Day"] = j
-            elif "90" in p: colmap["RONs 90 Day"] = j
-            elif "ytd" in p: colmap["RONs YTD"] = j
-
-        # Weekend Duty
-        if "weekend" in m:
-            if "30" in p:   colmap["Weekend Duty 30 Day"] = j
-            elif "90" in p: colmap["Weekend Duty 90 Day"] = j
-            elif "ytd" in p: colmap["Weekend Duty YTD"] = j
-
-        # Duty Days (exclude Weekend Duty so we don't double-map)
-        if ("duty" in m_raw) and ("weekend" not in m_raw):
-            if "30" in p:   colmap["Duty Days 30 Day"] = j
-            elif "90" in p: colmap["Duty Days 90 Day"] = j
-            elif "ytd" in p: colmap["Duty Days YTD"] = j
-
-    # 3) Fallback name column if not found: pick letter-dominant early column
-    if name_col is None:
-        candidates = list(range(min(8, raw.shape[1])))
-        def letters_ratio(series: pd.Series) -> float:
-            s = series.astype(str)
-            return (s.str.contains(r"[A-Za-z]", regex=True)).mean() - (s.str.contains(r"\d", regex=True)).mean()
-        name_col = max(candidates, key=lambda j: letters_ratio(raw.iloc[idx_metrics + 1:, j]))
-
-    # 4) Extract body rows, filter noise, and build output
     data = raw.iloc[idx_metrics + 1:].reset_index(drop=True)
-    names = data.iloc[:, name_col].astype(str).str.strip()
+    names = data.iloc[:, 1].astype(str).str.strip()
     mask = names.notna() & (names != "") & (~names.str.contains("Total", case=False, na=False))
     data, names = data[mask], names[mask]
 
-    out = pd.DataFrame({
-        "PilotFirst": names.map(clean_pilot_name).str.split().str[0]
+    duty_df = pd.DataFrame({
+        "PilotFirst": names.map(clean_pilot_name),
+        "RONs 30 Day": _to_num(data.iloc[:, 2]),
+        "Weekend Duty 30 Day": _to_num(data.iloc[:, 3]),
+        "Duty Days 30 Day": _to_num(data.iloc[:, 4]),
+        "RONs 90 Day": _to_num(data.iloc[:, 5]),
+        "Weekend Duty 90 Day": _to_num(data.iloc[:, 6]),
+        "Duty Days 90 Day": _to_num(data.iloc[:, 7]),
+        "RONs YTD": _to_num(data.iloc[:, 8]),
+        "Weekend Duty YTD": _to_num(data.iloc[:, 9]),
+        "Duty Days YTD": _to_num(data.iloc[:, 10]),
     })
-
-    # Pull mapped numeric columns if present
-    for label, j in colmap.items():
-        try:
-            out[label] = _to_num(data.iloc[:, j])
-        except Exception:
-            out[label] = np.nan
-
-    # Ensure all expected labels exist
-    expected = [
-        "Duty Days 30 Day","Duty Days 90 Day","Duty Days YTD",
-        "Weekend Duty 30 Day","Weekend Duty 90 Day","Weekend Duty YTD",
-        "RONs 30 Day","RONs 90 Day","RONs YTD",
-    ]
-    for label in expected:
-        if label not in out.columns:
-            out[label] = np.nan
-
-    return drop_empty_metric_rows(out, "PilotFirst", [c for c in out.columns if c != "PilotFirst"])
+    return drop_empty_metric_rows(duty_df, "PilotFirst", duty_df.columns[1:].tolist())
 
 
 def parse_pto_off(xl) -> pd.DataFrame:
-    """Robust parser for PTO & Off export.
-    - Finds a metrics header row containing PTO/Day Off (flexible matching)
-    - Locates a periods row anywhere (30/90/YTD or 6 Month); if missing, infers per-column
-    - Maps PTO/OFF for (30, 90/6mo, YTD) even if periods are embedded in header text
+    """PTO & Off export pinned to pairs per period.
+    30d: [2] PTO, [3] OFF
+    90d: [4] PTO, [5] OFF
+    YTD: [6] PTO, [7] OFF
+    Names in col 1.
     """
     raw = pd.read_excel(xl, header=None)
+    idx_periods = _find_row(raw, ["pto", "off"]) or 24
+    idx_metrics = idx_periods + 1
 
-    # 1) Find a row that clearly lists PTO/Off metrics
-    idx_metrics = None
-    for i in range(0, min(len(raw), 120)):
-        row = " | ".join(str(v).lower() for v in raw.iloc[i].tolist())
-        has_pto = ("pto" in row) or ("pto days" in row)
-        has_off = ("day off" in row) or ("days off" in row) or ("off" in row)
-        if has_pto and has_off:
-            idx_metrics = i
-            break
-    if idx_metrics is None:
-        raise ValueError("PTO/Off: Couldn't find the metrics header row.")
-
-    # 2) Try to find a separate periods row anywhere (not just near metrics)
-    idx_periods = None
-    for i in range(0, min(len(raw), 120)):
-        vals = [str(v).lower() for v in raw.iloc[i].tolist()]
-        has_30 = any(("30 day" in v) or ("30 days" in v) or ("30-day" in v) for v in vals)
-        # treat 6 months == 90 day window for this report
-        has_90 = any(("90 day" in v) or ("90 days" in v) or ("90-day" in v) or ("6 month" in v) or ("6 months" in v) or ("6 mos" in v) for v in vals)
-        has_ytd = any(("ytd" in v) or ("year to date" in v) or ("year-to-date" in v) or ("year2date" in v) for v in vals)
-        if has_30 and has_90 and has_ytd:
-            idx_periods = i
-            break
-
-    metrics = raw.iloc[idx_metrics].astype(str)
-    periods = raw.iloc[idx_periods].astype(str) if idx_periods is not None else pd.Series([""]*raw.shape[1])
-
-    if idx_periods is not None:
-        periods = periods.replace("nan", "").replace("", np.nan).ffill()
-    else:
-        # No explicit periods row; start with metrics row and infer per-column
-        periods = metrics.copy()
-
-    def _n(s: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", str(s).lower())
-
-    def _is_pto(m: str) -> bool:
-        m = _n(m)
-        return ("pto" in m) or ("ptodays" in m)
-
-    def _is_off(m: str) -> bool:
-        m = _n(m)
-        return ("off" in m) or ("dayoff" in m) or ("daysoff" in m) or ("offdays" in m)
-
-    def _period_from(texts: list[str]) -> str:
-        t = _n(" ".join([str(x) for x in texts]))
-        # order matters: look for explicit 30/90, then 6-month synonyms, then YTD synonyms
-        if ("30" in t) or ("30day" in t) or ("30days" in t):
-            return "30"
-        if ("90" in t) or ("90day" in t) or ("90days" in t) or ("6month" in t) or ("6months" in t) or ("6mos" in t):
-            return "90"
-        if ("ytd" in t) or ("yeartodate" in t) or ("year2date" in t):
-            return "ytd"
-        return ""
-
-    colmap: dict[str, int] = {}
-    name_col = None
-
-    # 3) Build mapping column-by-column
-    for j in range(raw.shape[1]):
-        m_raw = str(metrics.iloc[j])
-        p_raw = str(periods.iloc[j])
-
-        # Name column (Crew Name or similar)
-        m_low = m_raw.lower()
-        if name_col is None and (("crew" in m_low and "name" in m_low) or _n(m_raw) in ("crew", "name", "crewnam")):
-            name_col = j
-
-        # Determine which metric this column is
-        is_pto = _is_pto(m_raw)
-        is_off = _is_off(m_raw)
-        if not (is_pto or is_off):
-            continue
-
-        # Determine its period using both metric+period cells
-        per = _period_from([m_raw, p_raw])
-        # If still unknown, try neighbors around metrics row (above/below)
-        if per == "":
-            if idx_metrics - 1 >= 0:
-                per = _period_from([m_raw, raw.iloc[idx_metrics - 1, j]])
-        if per == "" and idx_metrics + 1 < len(raw):
-            per = _period_from([m_raw, raw.iloc[idx_metrics + 1, j]])
-
-        # Map label
-        if per == "30":
-            if is_pto: colmap["PTO 30 Day"] = j
-            if is_off: colmap["OFF 30 Day"] = j
-        elif per == "90":
-            if is_pto: colmap["PTO 90 Day"] = j
-            if is_off: colmap["OFF 90 Day"] = j
-        elif per == "ytd":
-            if is_pto: colmap["PTO YTD"] = j
-            if is_off: colmap["OFF YTD"] = j
-
-    # 4) Fallback for name column if not found: choose letter-dominant early column
-    if name_col is None:
-        candidates = list(range(min(8, raw.shape[1])))
-        def letters_ratio(series: pd.Series) -> float:
-            s = series.astype(str)
-            return (s.str.contains(r"[A-Za-z]", regex=True)).mean() - (s.str.contains(r"\d", regex=True)).mean()
-        name_col = max(candidates, key=lambda jj: letters_ratio(raw.iloc[idx_metrics + 1:, jj]))
-
-    # 5) Extract data, filter totals, and build output
     data = raw.iloc[idx_metrics + 1:].reset_index(drop=True)
-    names = data.iloc[:, name_col].astype(str).str.strip()
+    names = data.iloc[:, 1].astype(str).str.strip()
     mask = names.notna() & (names != "") & (~names.str.contains("Total", case=False, na=False))
     data, names = data[mask], names[mask]
 
     out = pd.DataFrame({
-        "PilotFirst": names.map(clean_pilot_name).str.split().str[0]
+        "PilotFirst": names.map(clean_pilot_name),
+        "PTO 30 Day": _to_num(data.iloc[:, 2]),
+        "OFF 30 Day": _to_num(data.iloc[:, 3]),
+        "PTO 90 Day": _to_num(data.iloc[:, 4]),
+        "OFF 90 Day": _to_num(data.iloc[:, 5]),
+        "PTO YTD": _to_num(data.iloc[:, 6]),
+        "OFF YTD": _to_num(data.iloc[:, 7]),
     })
-
-    for label in ["PTO 30 Day","PTO 90 Day","PTO YTD","OFF 30 Day","OFF 90 Day","OFF YTD"]:
-        j = colmap.get(label, None)
-        if j is not None:
-            try:
-                out[label] = _to_num(data.iloc[:, j])
-            except Exception:
-                out[label] = np.nan
-        else:
-            out[label] = np.nan
-
-    return drop_empty_metric_rows(out, "PilotFirst", [c for c in out.columns if c != "PilotFirst"]) 
+    return drop_empty_metric_rows(out, "PilotFirst", out.columns[1:].tolist())
 
 # =============================
 # Export helper (headers, logo, widths, freeze panes)
 # =============================
 
-def round_and_export(rep_out: pd.DataFrame) -> tuple[BytesIO, str]:
+def round_and_export(rep_out: pd.DataFrame) -> Tuple[BytesIO, str]:
     # Round values before export
     block_cols = [c for c in rep_out.columns if "Block Hours" in c]
     other_num_cols = [c for c in rep_out.columns if c != "Pilot" and c not in block_cols and pd.api.types.is_numeric_dtype(rep_out[c])]
@@ -485,7 +337,7 @@ def round_and_export(rep_out: pd.DataFrame) -> tuple[BytesIO, str]:
                             "image_data": img_bytes,
                             "x_offset": 2, "y_offset": 4,
                             "x_scale": 0.8, "y_scale": 0.8,
-                            "object_position": 1,  # move/size with cells
+                            "object_position": 1,
                         }
                     )
                     break
@@ -530,6 +382,8 @@ with col1:
     duty_file  = st.file_uploader("Duty Days export (.xlsx)", type=["xlsx"], key="duty")
 with col2:
     pto_file   = st.file_uploader("PTO & Off export (.xlsx)", type=["xlsx"], key="pto")
+
+save_to_disk = st.checkbox("Also save a copy to disk (./Pilot_Report_YYYYMMDD.xlsx)", value=True)
 
 build = st.button("Build Pilot Report ✅", use_container_width=True)
 
@@ -639,5 +493,12 @@ if build:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
+
+    # Optional local save
+    if save_to_disk:
+        out_path = Path.cwd() / fname
+        with open(out_path, "wb") as f:
+            f.write(bio.getvalue())
+        st.info(f"Saved a copy to: {out_path}")
 else:
     st.info("Upload your three .Biz Reports and click **Build Pilot Report**.")
