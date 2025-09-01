@@ -364,10 +364,6 @@ if build:
         st.stop()
 
     with st.spinner("Parsing files…"):
-        st.write("**Files received:**",
-                 {"Block": getattr(block_file, "name", "?"),
-                  "Duty": getattr(duty_file, "name", "?"),
-                  "PTO/OFF": getattr(pto_file, "name", "?")})
         try:
             blk = parse_block_time(block_file)
         except Exception as e:
