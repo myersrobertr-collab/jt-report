@@ -87,6 +87,7 @@ def _norm(s: str) -> str:
 # =============================
 # Parsers
 # =============================
+
 def parse_block_time(xl) -> pd.DataFrame:
     xls = pd.ExcelFile(xl)
     df = pd.read_excel(xl, sheet_name=xls.sheet_names[0], header=35)
@@ -117,68 +118,208 @@ def parse_block_time(xl) -> pd.DataFrame:
 
     return drop_empty_metric_rows(out, "Pilot", [])
 
+
 def parse_duty_days(xl) -> pd.DataFrame:
+    """Robust parser for the Duty Days export.
+    - Finds the period header row (30/90/YTD) even if merged cells are used
+    - Forward-fills period labels across columns
+    - Dynamically maps columns for RONs, Weekend Duty, and Duty Days
+    - Returns PilotFirst (first-name only) + the 9 metrics
+    """
     raw = pd.read_excel(xl, header=None)
+
+    # 1) Locate the periods row
     idx_periods = None
-    for i in range(10, min(len(raw), 60)):
-        row_vals = raw.iloc[i].astype(str).tolist()
-        if ("30 Days" in row_vals) and ("90 Days" in row_vals) and ("YTD" in row_vals):
-            idx_periods = i; break
+    for i in range(0, min(len(raw), 100)):
+        vals = [str(v).lower() for v in raw.iloc[i].tolist()]
+        has_30 = any(("30 day" in v) or ("30 days" in v) for v in vals)
+        has_90 = any(("90 day" in v) or ("90 days" in v) for v in vals)
+        has_ytd = any("ytd" in v for v in vals)
+        if has_30 and has_90 and has_ytd:
+            idx_periods = i
+            break
     if idx_periods is None:
         raise ValueError("Duty Days: Couldn't locate the periods row (30/90/YTD).")
 
     idx_metrics = idx_periods + 1
+    periods = raw.iloc[idx_periods].astype(str)
+    metrics = raw.iloc[idx_metrics].astype(str)
+
+    # Forward-fill merged/blank period cells so each column has a period label
+    periods = periods.replace("nan", "").replace("", np.nan).ffill()
+
+    def _n(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(s).lower())
+
+    colmap: dict[str, int] = {}
+    name_col = None
+
+    # 2) Build column mapping dynamically
+    for j in range(raw.shape[1]):
+        m_raw = str(metrics.iloc[j]).lower()
+        m = _n(metrics.iloc[j])
+        p = _n(periods.iloc[j])
+
+        # Name column (Crew Name or similar)
+        if name_col is None and (("crew" in m_raw and "name" in m_raw) or m in ("crew", "name", "crewnam")):
+            name_col = j
+
+        # RONs
+        if "ron" in m:
+            if "30" in p:   colmap["RONs 30 Day"] = j
+            elif "90" in p: colmap["RONs 90 Day"] = j
+            elif "ytd" in p: colmap["RONs YTD"] = j
+
+        # Weekend Duty
+        if "weekend" in m:
+            if "30" in p:   colmap["Weekend Duty 30 Day"] = j
+            elif "90" in p: colmap["Weekend Duty 90 Day"] = j
+            elif "ytd" in p: colmap["Weekend Duty YTD"] = j
+
+        # Duty Days (exclude Weekend Duty so we don't double-map)
+        if ("duty" in m_raw) and ("weekend" not in m_raw):
+            if "30" in p:   colmap["Duty Days 30 Day"] = j
+            elif "90" in p: colmap["Duty Days 90 Day"] = j
+            elif "ytd" in p: colmap["Duty Days YTD"] = j
+
+    # 3) Fallback name column if not found: pick letter-dominant early column
+    if name_col is None:
+        candidates = list(range(min(8, raw.shape[1])))
+        def letters_ratio(series: pd.Series) -> float:
+            s = series.astype(str)
+            return (s.str.contains(r"[A-Za-z]", regex=True)).mean() - (s.str.contains(r"\d", regex=True)).mean()
+        name_col = max(candidates, key=lambda j: letters_ratio(raw.iloc[idx_metrics + 1:, j]))
+
+    # 4) Extract body rows, filter noise, and build output
     data = raw.iloc[idx_metrics + 1:].reset_index(drop=True)
-
-    crew_col = 1
-    names = data.iloc[:, crew_col].astype(str).str.strip()
-    mask = names.notna() & (names != "") & (~names.str.contains("Total", case=False, na=False))
-    data, names = data[mask], names[mask]
-
-    duty_df = pd.DataFrame({
-        "PilotFirst": names.map(clean_pilot_name),
-        # Triplets per period = [RONs, Weekend Duty, Duty Day]
-        "Duty Days 30 Day": _to_num(data.iloc[:, 3]),
-        "Duty Days 90 Day": _to_num(data.iloc[:, 6]),
-        "Duty Days YTD": _to_num(data.iloc[:, 9]),
-        "Weekend Duty 30 Day": _to_num(data.iloc[:, 2]),
-        "Weekend Duty 90 Day": _to_num(data.iloc[:, 5]),
-        "Weekend Duty YTD": _to_num(data.iloc[:, 8]),
-        "RONs 30 Day": _to_num(data.iloc[:, 1]),
-        "RONs 90 Day": _to_num(data.iloc[:, 4]),
-        "RONs YTD": _to_num(data.iloc[:, 7]),
-    })
-    return drop_empty_metric_rows(duty_df, "PilotFirst", duty_df.columns[1:].tolist())
-
-def parse_pto_off(xl) -> pd.DataFrame:
-    raw = pd.read_excel(xl, header=None)
-    metrics_idx = None
-    for i in range(10, min(len(raw), 50)):
-        row_vals = raw.iloc[i].astype(str).tolist()
-        if any("Sum of PTO Days" in v for v in row_vals) and any("Sum of Day Off" in v for v in row_vals):
-            metrics_idx = i; break
-    if metrics_idx is None:
-        raise ValueError("PTO/Off: Couldn't find the metrics header row.")
-
-    data = raw.iloc[metrics_idx + 1:].reset_index(drop=True)
-    names = data.iloc[:, 1].astype(str).str.strip()
+    names = data.iloc[:, name_col].astype(str).str.strip()
     mask = names.notna() & (names != "") & (~names.str.contains("Total", case=False, na=False))
     data, names = data[mask], names[mask]
 
     out = pd.DataFrame({
-        "PilotFirst": names.map(clean_pilot_name),
-        "PTO 30 Day": _to_num(data.iloc[:, 2]),
-        "OFF 30 Day": _to_num(data.iloc[:, 3]),
-        "PTO 90 Day": _to_num(data.iloc[:, 4]),
-        "OFF 90 Day": _to_num(data.iloc[:, 5]),
-        "PTO YTD": _to_num(data.iloc[:, 6]),
-        "OFF YTD": _to_num(data.iloc[:, 7]),
+        "PilotFirst": names.map(clean_pilot_name).str.split().str[0]
     })
-    return drop_empty_metric_rows(out, "PilotFirst", out.columns[1:].tolist())
+
+    # Pull mapped numeric columns if present
+    for label, j in colmap.items():
+        try:
+            out[label] = _to_num(data.iloc[:, j])
+        except Exception:
+            out[label] = np.nan
+
+    # Ensure all expected labels exist
+    expected = [
+        "Duty Days 30 Day","Duty Days 90 Day","Duty Days YTD",
+        "Weekend Duty 30 Day","Weekend Duty 90 Day","Weekend Duty YTD",
+        "RONs 30 Day","RONs 90 Day","RONs YTD",
+    ]
+    for label in expected:
+        if label not in out.columns:
+            out[label] = np.nan
+
+    return drop_empty_metric_rows(out, "PilotFirst", [c for c in out.columns if c != "PilotFirst"])
+
+
+def parse_pto_off(xl) -> pd.DataFrame:
+    """Robust parser for PTO & Off export.
+    - Finds a metrics header row containing PTO/Day Off
+    - Tries to find a nearby periods row (30/90/YTD); if not found, infers from the metric cell itself
+    - Dynamically maps PTO/OFF x (30, 90, YTD)
+    """
+    raw = pd.read_excel(xl, header=None)
+
+    # 1) Find a metrics row with PTO/Off
+    idx_metrics = None
+    for i in range(0, min(len(raw), 100)):
+        row = " | ".join(str(v).lower() for v in raw.iloc[i].tolist())
+        if ("pto" in row or "pto days" in row) and ("day off" in row or "off" in row):
+            idx_metrics = i
+            break
+    if idx_metrics is None:
+        raise ValueError("PTO/Off: Couldn't find the metrics header row.")
+
+    # 2) Try to find a periods row near metrics row
+    idx_periods = None
+    for i in range(max(0, idx_metrics-2), min(len(raw), idx_metrics+3)):
+        vals = [str(v).lower() for v in raw.iloc[i].tolist()]
+        has_30 = any(("30 day" in v) or ("30 days" in v) for v in vals)
+        has_90 = any(("90 day" in v) or ("90 days" in v) for v in vals)
+        has_ytd = any("ytd" in v for v in vals)
+        if has_30 and has_90 and has_ytd:
+            idx_periods = i
+            break
+
+    metrics = raw.iloc[idx_metrics].astype(str)
+    periods = raw.iloc[idx_periods].astype(str) if idx_periods is not None else pd.Series([""]*raw.shape[1])
+
+    if idx_periods is not None:
+        periods = periods.replace("nan", "").replace("", np.nan).ffill()
+    else:
+        # No explicit periods row; infer period from the metric cell itself
+        periods = metrics.copy()
+
+    def _n(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(s).lower())
+
+    colmap: dict[str, int] = {}
+    name_col = None
+
+    for j in range(raw.shape[1]):
+        m_raw = str(metrics.iloc[j]).lower()
+        m = _n(metrics.iloc[j])
+        p = _n(periods.iloc[j])
+
+        # Name column (Crew Name)
+        if name_col is None and (("crew" in m_raw and "name" in m_raw) or m in ("crew", "name", "crewnam")):
+            name_col = j
+
+        # Which period?
+        period = "30" if "30" in p else ("90" if "90" in p else ("ytd" if "ytd" in p else ""))
+
+        # PTO vs OFF
+        if ("pto" in m) or ("ptodays" in m):
+            if period == "30": colmap["PTO 30 Day"] = j
+            elif period == "90": colmap["PTO 90 Day"] = j
+            elif period == "ytd": colmap["PTO YTD"] = j
+        if ("off" in m) or ("dayoff" in m):
+            if period == "30": colmap["OFF 30 Day"] = j
+            elif period == "90": colmap["OFF 90 Day"] = j
+            elif period == "ytd": colmap["OFF YTD"] = j
+
+    # Fallback for name col
+    if name_col is None:
+        candidates = list(range(min(8, raw.shape[1])))
+        def letters_ratio(series: pd.Series) -> float:
+            s = series.astype(str)
+            return (s.str.contains(r"[A-Za-z]", regex=True)).mean() - (s.str.contains(r"\d", regex=True)).mean()
+        name_col = max(candidates, key=lambda j: letters_ratio(raw.iloc[idx_metrics + 1:, j]))
+
+    data = raw.iloc[idx_metrics + 1:].reset_index(drop=True)
+    names = data.iloc[:, name_col].astype(str).str.strip()
+    mask = names.notna() & (names != "") & (~names.str.contains("Total", case=False, na=False))
+    data, names = data[mask], names[mask]
+
+    out = pd.DataFrame({
+        "PilotFirst": names.map(clean_pilot_name).str.split().str[0]
+    })
+
+    for label, j in colmap.items():
+        try:
+            out[label] = _to_num(data.iloc[:, j])
+        except Exception:
+            out[label] = np.nan
+
+    # Ensure all expected columns exist
+    for label in ["PTO 30 Day","PTO 90 Day","PTO YTD","OFF 30 Day","OFF 90 Day","OFF YTD"]:
+        if label not in out.columns:
+            out[label] = np.nan
+
+    return drop_empty_metric_rows(out, "PilotFirst", [c for c in out.columns if c != "PilotFirst"])
 
 # =============================
 # Export helper (headers, logo, widths, freeze panes)
 # =============================
+
 def round_and_export(rep_out: pd.DataFrame) -> tuple[BytesIO, str]:
     # Round values before export
     block_cols = [c for c in rep_out.columns if "Block Hours" in c]
@@ -388,7 +529,7 @@ if build:
         rep = blk_key.merge(dut_key, on="PilotKey", how="outer", suffixes=("", "_dut"))
         rep = rep.merge(pto_key, on="PilotKey", how="outer", suffixes=("", "_pto"))
 
-        # Display name
+        # Display name (prefer Block, then PTO, then Duty, then key)
         def _pick(row):
             if pd.notna(row.get("Pilot_blk")) and str(row["Pilot_blk"]).strip(): return row["Pilot_blk"]
             if pd.notna(row.get("PilotFirst_pto")) and str(row["PilotFirst_pto"]).strip(): return row["PilotFirst_pto"]
@@ -398,9 +539,9 @@ if build:
 
         # Cleanup
         rep = rep.drop(columns=["Pilot_blk","PilotFirst","PilotFirst_pto","PilotKey"], errors="ignore")
-        rep = rep.loc[:, ~rep.columns.uplicated()] if hasattr(rep.columns, "uplicated") else rep.loc[:, ~rep.columns.duplicated()]
+        rep = rep.loc[:, ~rep.columns.duplicated()]
 
-        # Lock roster & order
+        # Lock roster & order using full names
         order = [clean_pilot_name(n).title() for n in PILOT_WHITELIST]
         rep["Pilot"] = rep["Pilot"].map(lambda x: clean_pilot_name(x).title())
         rep = rep[rep["Pilot"].isin(order)].copy()
@@ -446,7 +587,7 @@ if build:
             st.stop()
 
         total_row = {c: rep[c].sum() for c in numeric_cols}; total_row["Pilot"] = "TOTAL"
-        avg_row   = {c: rep[c].mean() for c in numeric_cols}; avg_row["Pilot"] = "AVERAGE"
+        avg_row   = {c: rep[c].mean() for c in numeric_cols};   avg_row["Pilot"] = "AVERAGE"
         rep_out = pd.concat([rep, pd.DataFrame([total_row, avg_row])], ignore_index=True)
 
         try:
