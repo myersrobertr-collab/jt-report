@@ -1,5 +1,5 @@
-streamlit
-pandas
-numpy
-xlsxwriter
-openpyxl
+streamlit==1.37.*
+pandas==2.2.*
+openpyxl==3.1.*
+xlsxwriter==3.2.*
+numpy==1.26.*
