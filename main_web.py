@@ -14,7 +14,7 @@ import streamlit as st
 st.set_page_config(page_title="Pilot Report Builder — Web", layout="wide")
 st.title("🛫 Pilot Report Builder — Web")
 st.caption(
-    "Upload the 3 Salesforce exports (Block Time, Duty Days, PTO & Off). "
+    "Upload the 3 .Biz Reports (Block Time, Duty Days, PTO & Off). "
     "We clean headers/names, merge metrics, lock the roster/order, and export a pretty Excel with grouped headers."
 )
 
@@ -360,7 +360,7 @@ build = st.button("Build Pilot Report ✅", use_container_width=True)
 # =============================
 if build:
     if not (block_file and duty_file and pto_file):
-        st.error("Please upload all three Salesforce reports.")
+        st.error("Please upload all three .Biz Reports.")
         st.stop()
 
     with st.spinner("Parsing files…"):
@@ -462,4 +462,4 @@ if build:
         use_container_width=True,
     )
 else:
-    st.info("Upload your three Salesforce reports and click **Build Pilot Report**.")
+    st.info("Upload your three .Biz Reports and click **Build Pilot Report**.")
