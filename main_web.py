@@ -13,7 +13,7 @@ import streamlit as st
 # UI
 # =============================
 st.set_page_config(page_title="Pilot Report Builder — Local", layout="wide")
-st.title("🛫 TFS Pilot Report Builder (Local)")
+st.title("🛫 TFS Pilot Report Builder Ver.0925")
 st.caption(
     "Upload the 3 .Biz Reports (Block Time, Duty Days, PTO & Off). "
     "Filthy Animals.  "
