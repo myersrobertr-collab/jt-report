@@ -15,8 +15,8 @@ st.set_page_config(page_title="Pilot Report Builder — Web", layout="wide")
 st.title("🛫 TFS Pilot Report Builder")
 st.caption(
     "Upload the 3 .Biz Reports (Block Time, Duty Days, PTO & Off). "
-    "Filthy Animals"
-    "Go With Trim"
+    "Filthy Animals.  "
+    "...Go With Trim"
 )
 
 # =============================
