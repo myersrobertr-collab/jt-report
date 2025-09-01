@@ -72,7 +72,7 @@ def inject_css():
     )
 
 def pill(ok: bool) -> str:
-    return f"<span class='pill {'Roger' if ok else 'Standby'}'>{'Cleared For Takeoff' if ok else 'Line Up And Wait'}</span>"
+    return f"<span class='pill {'ok' if ok else 'wait'}'>{'Cleared For Takeoff' if ok else 'Line Up And Wait'}</span>"
 
 def link_button(label: str, url: Optional[str]):
     if url and url.startswith("http"):
@@ -457,7 +457,7 @@ with col1:
     with s2:
         link_button("Block Time Report", SALESFORCE_REPORTS.get("block"))
     st.write("")
-    build = st.button("Build Pilot Report ✅", use_container_width=True)
+    build = st.button("Create The Magic ✅", use_container_width=True)
 
 with col2:
     duty_file = st.file_uploader(
@@ -614,7 +614,7 @@ if build:
                 use_container_width=True,
             )
 
-    st.success("✅ Report built. Report Is Ready.")
+    st.success("✅ Report Is Ready.")
 else:
     st.info("Upload your three .Biz Reports and click **Build Pilot Report**.")
 
