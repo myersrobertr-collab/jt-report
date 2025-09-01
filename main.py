@@ -1,26 +1,30 @@
 import re
+import sys
+import subprocess
 import unicodedata
+from io import BytesIO
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 import streamlit as st
-from io import BytesIO
-from datetime import datetime
-from typing import Optional
-from pathlib import Path
-import sys
-import subprocess
 
+# =====================================
+# App UI
+# =====================================
 st.set_page_config(page_title="Pilot Report Builder", layout="wide")
 st.title("🛫 Pilot Report Builder")
 st.caption(
     "Upload the 3 Salesforce exports (Block Time, Duty Days, PTO & Off). "
     "We auto-detect headers, clean names, combine metrics, hard-lock the pilot roster & order, "
-    "and export the Pilot Report straight to your Downloads folder."
+    "and export the Pilot Report straight to a safe folder (Downloads if permitted on macOS)."
 )
 
-# =============================
+# =====================================
 # Hard-locked pilot roster & order
-# =============================
+# =====================================
 PILOT_WHITELIST: list[str] = [
     "Barry Wolfe",
     "Bradley Jordan",
@@ -40,9 +44,9 @@ PILOT_WHITELIST: list[str] = [
     "Sean Sinette",
 ]
 
-# =============================
+# =====================================
 # Utilities
-# =============================
+# =====================================
 NOISE_PATTERNS = (
     "filtered by", "as of", "report", "custom object",
     "rows:", "columns:", "page", "dashboard",
@@ -51,8 +55,10 @@ NOISE_PATTERNS = (
 )
 NOISE_NAME_HINTS = ("crew name", "sum of", "total", "grand total", "filtered", "↑", "→", ":", "|")
 
+
 def _to_num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
+
 
 def clean_pilot_name(s: str) -> str:
     if s is None:
@@ -62,6 +68,7 @@ def clean_pilot_name(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()          # collapse spaces
     s = s.strip(" ,;-_/\\|")                    # trim punctuation
     return s
+
 
 def looks_like_noise(s: str) -> bool:
     if s is None:
@@ -77,6 +84,7 @@ def looks_like_noise(s: str) -> bool:
         return True
     return False
 
+
 def drop_empty_metric_rows(df: pd.DataFrame, name_col: str, metric_cols: list[str]) -> pd.DataFrame:
     out = df.copy()
     out[name_col] = out[name_col].map(clean_pilot_name)
@@ -88,6 +96,7 @@ def drop_empty_metric_rows(df: pd.DataFrame, name_col: str, metric_cols: list[st
         out = out[keep]
     return out.reset_index(drop=True)
 
+
 def collapse_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
     dup_names = df.columns[df.columns.duplicated()].unique()
     for name in dup_names:
@@ -98,6 +107,7 @@ def collapse_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
         df = df.loc[:, ~df.columns.duplicated()]
     return df
 
+
 def _norm(s: str) -> str:
     if s is None:
         return ""
@@ -106,14 +116,49 @@ def _norm(s: str) -> str:
     s = re.sub(r"[^0-9a-zA-Z]+", "", s)
     return s.lower()
 
+
 def get_downloads_dir() -> Path:
     """Cross-platform Downloads folder (fallback to home)."""
     downloads = Path.home() / "Downloads"
     return downloads if downloads.exists() else Path.home()
 
-# =============================
+
+def save_report_safely(bio: BytesIO, fname: str) -> tuple[Path, Optional[str]]:
+    """
+    Try to save to Downloads first. If permission blocked (macOS Files & Folders),
+    fall back to ~/JT Pilot Reports, then as last resort CWD.
+    Returns (saved_path, note).
+    """
+    targets: list[Path] = [
+        get_downloads_dir() / fname,
+        (Path.home() / "JT Pilot Reports" / fname),
+        (Path.cwd() / fname),
+    ]
+
+    for i, path in enumerate(targets):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(bio.getvalue())
+            # Compose note for fallbacks
+            if i == 0:
+                return path, None
+            elif i == 1:
+                return path, "macOS blocked the Downloads folder. Saved to ~/JT Pilot Reports instead."
+            else:
+                return path, "Could not write to Downloads or ~/JT Pilot Reports. Saved to the current folder instead."
+        except PermissionError:
+            continue
+        except OSError:
+            continue
+
+    # If all attempts fail, raise to surface error in UI
+    raise PermissionError("Unable to write the report to any of the fallback locations.")
+
+
+# =====================================
 # Parsers
-# =============================
+# =====================================
 def parse_block_time(xl) -> pd.DataFrame:
     # Heuristic: sample needed header=35 on the first sheet
     xls = pd.ExcelFile(xl)
@@ -136,21 +181,29 @@ def parse_block_time(xl) -> pd.DataFrame:
 
     # Block Hours trio: "Sum of Block Time (hours)" (+ .1, .2)
     blk_cols = [c for c in cols if "Sum of Block Time" in str(c)]
-    if len(blk_cols) > 0: out["Block Hours 30 Day"] = _to_num(df[blk_cols[0]])
-    if len(blk_cols) > 1: out["Block Hours 6 Month"] = _to_num(df[blk_cols[1]])
-    if len(blk_cols) > 2: out["Block Hours YTD"] = _to_num(df[blk_cols[2]])
+    if len(blk_cols) > 0:
+        out["Block Hours 30 Day"] = _to_num(df[blk_cols[0]])
+    if len(blk_cols) > 1:
+        out["Block Hours 6 Month"] = _to_num(df[blk_cols[1]])
+    if len(blk_cols) > 2:
+        out["Block Hours YTD"] = _to_num(df[blk_cols[2]])
 
     # Day/Night Takeoffs & Landings (keep separate)
-    if "Sum of Day Takeoff" in cols:   out["Day Takeoff"] = _to_num(df["Sum of Day Takeoff"]).fillna(0)
-    if "Sum of Night Takeoff" in cols: out["Night Takeoff"] = _to_num(df["Sum of Night Takeoff"]).fillna(0)
-    if "Sum of Day Landing" in cols:   out["Day Landing"] = _to_num(df["Sum of Day Landing"]).fillna(0)
-    if "Sum of Night Landing" in cols: out["Night Landing"] = _to_num(df["Sum of Night Landing"]).fillna(0)
+    if "Sum of Day Takeoff" in cols:
+        out["Day Takeoff"] = _to_num(df["Sum of Day Takeoff"]).fillna(0)
+    if "Sum of Night Takeoff" in cols:
+        out["Night Takeoff"] = _to_num(df["Sum of Night Takeoff"]).fillna(0)
+    if "Sum of Day Landing" in cols:
+        out["Day Landing"] = _to_num(df["Sum of Day Landing"]).fillna(0)
+    if "Sum of Night Landing" in cols:
+        out["Night Landing"] = _to_num(df["Sum of Night Landing"]).fillna(0)
 
     # Holds (Instrument currency)
     if "Sum of Flight Log: Holds" in cols:
         out["Holds 6 Month"] = _to_num(df["Sum of Flight Log: Holds"])
 
     return drop_empty_metric_rows(out, name_col="Pilot", metric_cols=[])
+
 
 def parse_duty_days(xl) -> pd.DataFrame:
     raw = pd.read_excel(xl, header=None)
@@ -172,7 +225,7 @@ def parse_duty_days(xl) -> pd.DataFrame:
     mask = names.notna() & (names != "") & (~names.str.contains("Total", case=False, na=False))
     data, names = data[mask], names[mask]
 
-    # Per-period triplet = [RONs, Weekend Duty, Duty Day]
+    # Per-period triplet = [RONs, Weekend Duty, Duty Day] → we only pull the RONs & Duty Day counts
     duty_df = pd.DataFrame({
         "PilotFirst": names.map(clean_pilot_name),
         "Duty Days 30 Day": _to_num(data.iloc[:, 3]),
@@ -183,6 +236,7 @@ def parse_duty_days(xl) -> pd.DataFrame:
         "RONs YTD": _to_num(data.iloc[:, 7]),
     })
     return drop_empty_metric_rows(duty_df, "PilotFirst", duty_df.columns[1:].tolist())
+
 
 def parse_pto_off(xl) -> pd.DataFrame:
     raw = pd.read_excel(xl, header=None)
@@ -212,9 +266,10 @@ def parse_pto_off(xl) -> pd.DataFrame:
     })
     return drop_empty_metric_rows(out, "PilotFirst", out.columns[1:].tolist())
 
-# =============================
+
+# =====================================
 # Export helper (rounding + Excel formatting)
-# =============================
+# =====================================
 def round_and_export(rep_out: pd.DataFrame) -> tuple[BytesIO, str]:
     # --- Round values before export ---
     block_cols = [c for c in rep_out.columns if "Block Hours" in c]
@@ -286,9 +341,10 @@ def round_and_export(rep_out: pd.DataFrame) -> tuple[BytesIO, str]:
     bio.seek(0)
     return bio, fname
 
-# =============================
+
+# =====================================
 # UI
-# =============================
+# =====================================
 col1, col2 = st.columns(2)
 with col1:
     block_file = st.file_uploader("Block Time export (.xlsx)", type=["xlsx"], key="blk")
@@ -298,18 +354,32 @@ with col2:
 
 build = st.button("Build Pilot Report ✅", use_container_width=True)
 
-# =============================
+# =====================================
 # Processing
-# =============================
+# =====================================
 if build:
     if not (block_file and duty_file and pto_file):
         st.error("Please upload all three Salesforce reports.")
         st.stop()
 
-    # Parse all three sources
-    blk = parse_block_time(block_file)
-    dut = parse_duty_days(duty_file)
-    pto = parse_pto_off(pto_file)
+    # Parse all three sources with friendly errors
+    try:
+        blk = parse_block_time(block_file)
+    except Exception as e:
+        st.error(f"Block Time file wasn’t recognized: {e}")
+        st.stop()
+
+    try:
+        dut = parse_duty_days(duty_file)
+    except Exception as e:
+        st.error(f"Duty Days file wasn’t recognized: {e}")
+        st.stop()
+
+    try:
+        pto = parse_pto_off(pto_file)
+    except Exception as e:
+        st.error(f"PTO & Off file wasn’t recognized: {e}")
+        st.stop()
 
     # Merge on first token of name (lowercase)
     blk = blk.rename(columns={"Pilot": "Pilot_blk"})
@@ -356,7 +426,9 @@ if build:
         "Day Takeoff", "Night Takeoff", "Day Landing", "Night Landing",
         "Holds 6 Month",
     ]
-    cols_order = [c for c in desired_order if c in rep.columns] + [c for c in rep.columns if c not in desired_order and c != "Pilot"]
+    cols_order = [c for c in desired_order if c in rep.columns] + [
+        c for c in rep.columns if c not in desired_order and c != "Pilot"
+    ]
     rep = rep[cols_order]
 
     # Fill numerics and final clean
@@ -368,30 +440,38 @@ if build:
 
     # Totals/Averages
     numeric_cols = [c for c in rep.columns if c != "Pilot" and pd.api.types.is_numeric_dtype(rep[c])]
+    if not numeric_cols:
+        st.error("No numeric columns were detected after merging. "
+                 "Check that the three exports match your current Salesforce report formats.")
+        st.stop()
+
     total_row = {c: rep[c].sum() for c in numeric_cols}; total_row["Pilot"] = "TOTAL"
     avg_row   = {c: rep[c].mean() for c in numeric_cols}; avg_row["Pilot"] = "AVERAGE"
     rep_out = pd.concat([rep, pd.DataFrame([total_row, avg_row])], ignore_index=True)
 
-    # --- Auto-save to Downloads (no preview) ---
+    # --- Export & safe save (macOS-friendly) ---
     bio, fname = round_and_export(rep_out)
-    downloads_dir = get_downloads_dir()
-    out_path = downloads_dir / fname
 
-    with open(out_path, "wb") as f:
-        f.write(bio.getvalue())
+    try:
+        saved_path, note = save_report_safely(bio, fname)
+    except Exception as e:
+        st.error(f"Could not save the report: {e}")
+        st.stop()
 
-    # Try to open the folder / select the file
+    # Reveal the file in Finder / Explorer
     try:
         if sys.platform.startswith("win"):
-            subprocess.run(["explorer", "/select,", str(out_path)], check=False)
+            subprocess.run(["explorer", "/select,", str(saved_path)], check=False)
         elif sys.platform == "darwin":
-            subprocess.run(["open", "-R", str(out_path)], check=False)
+            subprocess.run(["open", "-R", str(saved_path)], check=False)
         else:
-            subprocess.run(["xdg-open", str(downloads_dir)], check=False)
+            subprocess.run(["xdg-open", str(saved_path.parent)], check=False)
     except Exception:
         pass
 
-    st.success(f"✅ Report saved to: {out_path}")
-    st.caption("You can find it in your Downloads folder.")
+    st.success(f"✅ Report saved to: {saved_path}")
+    if note:
+        st.warning(note)
+
 else:
     st.info("Upload your three reports and click **Build Pilot Report**.")
