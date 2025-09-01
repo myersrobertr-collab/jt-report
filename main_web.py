@@ -29,32 +29,48 @@ def inject_css():
     st.markdown(
         """
         <style>
-        .block-container { padding-top: calc(3.25rem + env(safe-area-inset-top));
-                           padding-bottom: 1.25rem; max-width: 1200px; }
+        .block-container {
+            padding-top: calc(3.25rem + env(safe-area-inset-top));
+            padding-bottom: 1.25rem;
+            max-width: 1200px;
+        }
         h1, h2, h3 { letter-spacing: 0.2px; }
 
         /* Primary buttons */
-        .stButton > button { background:#E4002B; color:#fff; border:0;
-                             border-radius:14px; padding:.8rem 1.15rem; font-weight:700; }
+        .stButton > button {
+            background:#E4002B; color:#fff; border:0;
+            border-radius:14px; padding:.8rem 1.15rem; font-weight:700;
+        }
         .stButton > button:hover { filter:brightness(0.95); }
-        .stDownloadButton > button { border-radius:14px; padding:.8rem 1.15rem; font-weight:700; }
+        .stDownloadButton > button {
+            border-radius:14px; padding:.8rem 1.15rem; font-weight:700;
+        }
 
         /* Ready/Waiting pills */
-        .pill { display:inline-block; padding:.15rem .6rem; border-radius:999px;
-                font-size:.85rem; font-weight:600; margin-left:.4rem; vertical-align:middle; }
+        .pill {
+            display:inline-block; padding:.15rem .6rem; border-radius:999px;
+            font-size:.85rem; font-weight:600; margin-left:.4rem; vertical-align:middle;
+        }
         .ok   { background:#e8f5e9; color:#2e7d32; border:1px solid #a5d6a7; }
         .wait { background:#fff3e0; color:#e65100; border:1px solid #ffcc80; }
 
         /* Small link-style button for Salesforce open links */
-        .sfbtn { display:inline-block; text-decoration:none; background:#111827; color:#fff;
-                 padding:.45rem .7rem; border-radius:10px; font-weight:600; }
+        .sfbtn {
+            display:inline-block; text-decoration:none; background:#111827; color:#fff;
+            padding:.45rem .7rem; border-radius:10px; font-weight:600;
+        }
         .sfbtn:hover { filter:brightness(0.95); }
         .sfbtn.disabled { background:#9ca3af; pointer-events:none; }
+
+        /* Center text inside Streamlit alert ribbons (info/warn/success/error) */
+        div[data-testid="stAlert"] p { text-align: center; }
 
         #MainMenu {visibility:hidden;} footer {visibility:hidden;}
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
     )
 
 def pill(ok: bool) -> str:
@@ -602,23 +618,6 @@ if build:
 
     st.success("✅ Report built. Download is ready on the right.")
 else:
-    st.markdown(
-    """
-    <style>
-      .info-ribbon {
-        text-align: center;
-        background: #eef6ff;
-        color: #1d4ed8;
-        border: 1px solid #bfdbfe;
-        padding: 12px 16px;
-        border-radius: 12px;
-        font-weight: 500;
-      }
-    </style>
-    <div class="info-ribbon">
-      Upload your three .Biz Reports and click <b>Build Pilot Report</b>.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    st.info("Upload your three .Biz Reports and click **Build Pilot Report**.")
+
 
