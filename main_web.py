@@ -6,7 +6,6 @@ import streamlit as st
 from io import BytesIO
 from datetime import datetime
 
-# =============== UI ===============
 st.set_page_config(page_title="Pilot Report Builder", layout="wide")
 st.title("🛫 Pilot Report Builder (Web)")
 st.caption(
@@ -15,7 +14,6 @@ st.caption(
     "and return a ready-to-download Excel file."
 )
 
-# =============== Roster ===============
 PILOT_WHITELIST: list[str] = [
     "Barry Wolfe","Bradley Jordan","Debra Voit","Dustin Anderson","Eric Tange",
     "Grant Fitzer","Ian Hank","James Duffey","Jeffrey Tyson","Joshua Otzen",
@@ -23,7 +21,6 @@ PILOT_WHITELIST: list[str] = [
     "Ron Jenson","Sean Sinette",
 ]
 
-# =============== Utils ===============
 NOISE_PATTERNS = (
     "filtered by","as of","report","custom object","rows:","columns:","page","dashboard",
     "record count","grand total","subtotal","grouped by","show all","click to","run report"
@@ -77,7 +74,7 @@ def _norm(s: str) -> str:
     s = re.sub(r"[^0-9a-zA-Z]+","",s)
     return s.lower()
 
-# =============== Parsers ===============
+# ---------- Parsers ----------
 def parse_block_time(xl) -> pd.DataFrame:
     xls = pd.ExcelFile(xl)
     df = pd.read_excel(xl, sheet_name=xls.sheet_names[0], header=35)
@@ -123,11 +120,15 @@ def parse_duty_days(xl) -> pd.DataFrame:
     mask = names.notna() & (names != "") & (~names.str.contains("Total", case=False, na=False))
     data, names = data[mask], names[mask]
 
+    # Triplets: [RONs, Weekend Duty, Duty Day]
     duty_df = pd.DataFrame({
         "PilotFirst": names.map(clean_pilot_name),
         "Duty Days 30 Day": _to_num(data.iloc[:, 3]),
         "Duty Days 90 Day": _to_num(data.iloc[:, 6]),
         "Duty Days YTD": _to_num(data.iloc[:, 9]),
+        "Weekend Duty 30 Day": _to_num(data.iloc[:, 2]),
+        "Weekend Duty 90 Day": _to_num(data.iloc[:, 5]),
+        "Weekend Duty YTD": _to_num(data.iloc[:, 8]),
         "RONs 30 Day": _to_num(data.iloc[:, 1]),
         "RONs 90 Day": _to_num(data.iloc[:, 4]),
         "RONs YTD": _to_num(data.iloc[:, 7]),
@@ -160,7 +161,6 @@ def parse_pto_off(xl) -> pd.DataFrame:
     })
     return drop_empty_metric_rows(out, "PilotFirst", out.columns[1:].tolist())
 
-# =============== Export helper ===============
 def round_and_export(rep_out: pd.DataFrame) -> tuple[BytesIO, str]:
     block_cols = [c for c in rep_out.columns if "Block Hours" in c]
     other_num_cols = [c for c in rep_out.columns if c != "Pilot" and c not in block_cols and pd.api.types.is_numeric_dtype(rep_out[c])]
@@ -192,13 +192,12 @@ def round_and_export(rep_out: pd.DataFrame) -> tuple[BytesIO, str]:
             elif "Block Hours" in col: ws.set_column(j, j, 16, hour_fmt)
             else: ws.set_column(j, j, 16, int_fmt)
         for row_idx, pilot_name in enumerate(rep_out["Pilot"], start=1):
-            name_upper = str(pilot_name).upper()
-            if name_upper == "TOTAL": ws.set_row(row_idx, None, highlight_total)
-            elif name_upper == "AVERAGE": ws.set_row(row_idx, None, highlight_avg)
+            u = str(pilot_name).upper()
+            if u == "TOTAL": ws.set_row(row_idx, None, highlight_total)
+            elif u == "AVERAGE": ws.set_row(row_idx, None, highlight_avg)
     bio.seek(0)
     return bio, fname
 
-# =============== UI ===============
 col1, col2 = st.columns(2)
 with col1:
     block_file = st.file_uploader("Block Time export (.xlsx)", type=["xlsx"], key="blk")
@@ -212,7 +211,6 @@ if "report_bytes" not in st.session_state:
 
 build = st.button("Build Pilot Report ✅", use_container_width=True)
 
-# =============== Processing ===============
 if build:
     if not (block_file and duty_file and pto_file):
         st.error("Please upload all three Salesforce reports.")
@@ -261,6 +259,7 @@ if build:
     desired_order = [
         "Pilot",
         "Duty Days 30 Day","Duty Days 90 Day","Duty Days YTD",
+        "Weekend Duty 30 Day","Weekend Duty 90 Day","Weekend Duty YTD",
         "Block Hours 30 Day","Block Hours 6 Month","Block Hours YTD",
         "RONs 30 Day","RONs 90 Day","RONs YTD",
         "OFF 30 Day","OFF 90 Day","OFF YTD",
@@ -292,7 +291,6 @@ if build:
 
     st.success("✅ Report built. Use the download button below.")
 
-# Show download button if we have a report in memory
 if st.session_state.report_bytes and st.session_state.report_name:
     st.download_button(
         "⬇️ Download Pilot Report (Excel)",
