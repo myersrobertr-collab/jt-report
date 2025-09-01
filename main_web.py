@@ -497,7 +497,7 @@ with col3:
 # =============================
 if build:
     if not (block_file and duty_file and pto_file):
-        st.error("Please upload all three .Biz Reports.")
+        st.error("Jeff!  All 3 Reports From .Biz!.")
         st.stop()
 
     with st.spinner("Parsing files…"):
@@ -614,7 +614,7 @@ if build:
                 use_container_width=True,
             )
 
-    st.success("✅ Report built. Download is ready on the right.")
+    st.success("✅ Report built. Report Is Ready.")
 else:
     st.info("Upload your three .Biz Reports and click **Build Pilot Report**.")
 
