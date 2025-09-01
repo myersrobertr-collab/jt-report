@@ -12,10 +12,11 @@ import streamlit as st
 # UI
 # =============================
 st.set_page_config(page_title="Pilot Report Builder — Web", layout="wide")
-st.title("🛫 Pilot Report Builder — Web")
+st.title("🛫 TFS Pilot Report Builder")
 st.caption(
     "Upload the 3 .Biz Reports (Block Time, Duty Days, PTO & Off). "
-    "We clean headers/names, merge metrics, lock the roster/order, and export a pretty Excel with grouped headers."
+    "Filthy Animals"
+    "Go With Trim"
 )
 
 # =============================
