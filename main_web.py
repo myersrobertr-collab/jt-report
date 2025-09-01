@@ -72,7 +72,7 @@ def inject_css():
     )
 
 def pill(ok: bool) -> str:
-    return f"<span class='pill {'ok' if ok else 'wait'}'>{'Ready' if ok else 'Waiting'}</span>"
+    return f"<span class='pill {'Roger' if ok else 'Standby'}'>{'Cleared For Takeoff' if ok else 'Line Up And Wait'}</span>"
 
 def link_button(label: str, url: Optional[str]):
     if url and url.startswith("http"):
