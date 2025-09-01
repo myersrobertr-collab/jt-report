@@ -86,7 +86,7 @@ def _norm(s: str) -> str:
     return s.lower()
 
 # =============================
-# Header helpers pinned to your 2025‑08‑31 export structure
+# Header helpers pinned to your 2025-08-31 export structure
 # =============================
 
 def _find_row(df: pd.DataFrame, tokens: List[str], max_rows: int = 120) -> Optional[int]:
@@ -383,8 +383,6 @@ with col1:
 with col2:
     pto_file   = st.file_uploader("PTO & Off export (.xlsx)", type=["xlsx"], key="pto")
 
-save_to_disk = st.checkbox("Also save a copy to disk (./Pilot_Report_YYYYMMDD.xlsx)", value=True)
-
 build = st.button("Build Pilot Report ✅", use_container_width=True)
 
 # =============================
@@ -493,12 +491,5 @@ if build:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
-
-    # Optional local save
-    if save_to_disk:
-        out_path = Path.cwd() / fname
-        with open(out_path, "wb") as f:
-            f.write(bio.getvalue())
-        st.info(f"Saved a copy to: {out_path}")
 else:
     st.info("Upload your three .Biz Reports and click **Build Pilot Report**.")
